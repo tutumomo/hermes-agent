@@ -1017,6 +1017,79 @@ def provider_label(provider: Optional[str]) -> str:
     return _PROVIDER_LABELS.get(normalized, original or "OpenRouter")
 
 
+# Models that support OpenAI Priority Processing (service_tier="priority").
+# See https://openai.com/api-priority-processing/ for the canonical list.
+# Only the bare model slug is stored (no vendor prefix).
+_PRIORITY_PROCESSING_MODELS: frozenset[str] = frozenset({
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.2",
+    "gpt-5.1",
+    "gpt-5",
+    "gpt-5-mini",
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4.1-nano",
+    "gpt-4o",
+    "gpt-4o-mini",
+    "o3",
+    "o4-mini",
+})
+
+# Models that support Anthropic Fast Mode (speed="fast").
+# See https://platform.claude.com/docs/en/build-with-claude/fast-mode
+# Currently only Claude Opus 4.6.  Both hyphen and dot variants are stored
+# to handle native Anthropic (claude-opus-4-6) and OpenRouter (claude-opus-4.6).
+_ANTHROPIC_FAST_MODE_MODELS: frozenset[str] = frozenset({
+    "claude-opus-4-6",
+    "claude-opus-4.6",
+})
+
+
+def _strip_vendor_prefix(model_id: str) -> str:
+    """Strip vendor/ prefix from a model ID (e.g. 'anthropic/claude-opus-4-6' -> 'claude-opus-4-6')."""
+    raw = str(model_id or "").strip().lower()
+    if "/" in raw:
+        raw = raw.split("/", 1)[1]
+    return raw
+
+
+def model_supports_fast_mode(model_id: Optional[str]) -> bool:
+    """Return whether Hermes should expose the /fast toggle for this model."""
+    raw = _strip_vendor_prefix(str(model_id or ""))
+    if raw in _PRIORITY_PROCESSING_MODELS:
+        return True
+    # Anthropic fast mode — strip date suffixes (e.g. claude-opus-4-6-20260401)
+    # and OpenRouter variant tags (:fast, :beta) for matching.
+    base = raw.split(":")[0]
+    return base in _ANTHROPIC_FAST_MODE_MODELS
+
+
+def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
+    """Return True if the model supports Anthropic's fast mode (speed='fast')."""
+    raw = _strip_vendor_prefix(str(model_id or ""))
+    base = raw.split(":")[0]
+    return base in _ANTHROPIC_FAST_MODE_MODELS
+
+
+def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | None:
+    """Return request_overrides for fast/priority mode, or None if unsupported.
+
+    Returns provider-appropriate overrides:
+    - OpenAI models: ``{"service_tier": "priority"}`` (Priority Processing)
+    - Anthropic models: ``{"speed": "fast"}`` (Anthropic Fast Mode beta)
+
+    The overrides are injected into the API request kwargs by
+    ``_build_api_kwargs`` in run_agent.py — each API path handles its own
+    keys (service_tier for OpenAI/Codex, speed for Anthropic Messages).
+    """
+    if not model_supports_fast_mode(model_id):
+        return None
+    if _is_anthropic_fast_model(model_id):
+        return {"speed": "fast"}
+    return {"service_tier": "priority"}
+
+
 def _resolve_copilot_catalog_api_key() -> str:
     """Best-effort GitHub token for fetching the Copilot model catalog."""
     try:
